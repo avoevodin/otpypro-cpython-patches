@@ -1,1 +1,1 @@
-# Patches with some custom opcodes for Python.
+# Patches with some custom opcodes and statements for Python.
