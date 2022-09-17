@@ -1,0 +1,114 @@
+From e3191121a16249c98823e95f3edd76cc13f8f7cb Mon Sep 17 00:00:00 2001
+From: avoevodin8888 <avoevodin8888@gmail.com>
+Date: Sat, 17 Sep 2022 22:11:56 +0000
+Subject: [PATCH] added new opcode load otus instead 0 load fast and load const
+
+---
+ Include/opcode.h        |  1 +
+ Lib/opcode.py           |  1 +
+ Python/ceval.c          | 16 +++++++++++++++-
+ Python/opcode_targets.h |  2 +-
+ Python/peephole.c       | 10 ++++++++--
+ 5 files changed, 26 insertions(+), 4 deletions(-)
+
+diff --git a/Include/opcode.h b/Include/opcode.h
+index 19944fa..65b46f6 100644
+--- a/Include/opcode.h
++++ b/Include/opcode.h
+@@ -127,6 +127,7 @@ extern "C" {
+ #define SET_UPDATE              163
+ #define DICT_MERGE              164
+ #define DICT_UPDATE             165
++#define LOAD_OTUS               166
+ 
+ /* EXCEPT_HANDLER is a special, implicit block type which is created when
+    entering an except handler. It is not an opcode but we define it here
+diff --git a/Lib/opcode.py b/Lib/opcode.py
+index ac1aa53..ceabdcc 100644
+--- a/Lib/opcode.py
++++ b/Lib/opcode.py
+@@ -213,5 +213,6 @@ def_op('LIST_EXTEND', 162)
+ def_op('SET_UPDATE', 163)
+ def_op('DICT_MERGE', 164)
+ def_op('DICT_UPDATE', 165)
++def_op('LOAD_OTUS', 166)
+ 
+ del def_op, name_op, jrel_op, jabs_op
+diff --git a/Python/ceval.c b/Python/ceval.c
+index 9a61f8a..05c294c 100644
+--- a/Python/ceval.c
++++ b/Python/ceval.c
+@@ -1485,7 +1485,21 @@ main_loop:
+             PUSH(value);
+             FAST_DISPATCH();
+         }
+-
++        case TARGET(LOAD_OTUS): {
++            PyObject *value = GETLOCAL(0);
++            if (value == NULL) {
++                format_exc_check_arg(tstate, PyExc_UnboundLocalError,
++                                     UNBOUNDLOCAL_ERROR_MSG,
++                                     PyTuple_GetItem(co->co_varnames, oparg));
++                goto error;
++            }
++            Py_INCREF(value);
++            PUSH(value);
++            PyObject *value_const = GETITEM(consts, oparg); 
++            Py_INCREF(value_const);
++            PUSH(value_const);
++            FAST_DISPATCH();
++        }
+         case TARGET(LOAD_CONST): {
+             PREDICTED(LOAD_CONST);
+             PyObject *value = GETITEM(consts, oparg);
+diff --git a/Python/opcode_targets.h b/Python/opcode_targets.h
+index 538fdbe..437143f 100644
+--- a/Python/opcode_targets.h
++++ b/Python/opcode_targets.h
+@@ -165,7 +165,7 @@ static void *opcode_targets[256] = {
+     &&TARGET_SET_UPDATE,
+     &&TARGET_DICT_MERGE,
+     &&TARGET_DICT_UPDATE,
+-    &&_unknown_opcode,
++    &&TARGET_LOAD_OTUS,
+     &&_unknown_opcode,
+     &&_unknown_opcode,
+     &&_unknown_opcode,
+diff --git a/Python/peephole.c b/Python/peephole.c
+index 6954c87..7ef7499 100644
+--- a/Python/peephole.c
++++ b/Python/peephole.c
+@@ -303,6 +303,14 @@ PyCode_Optimize(PyObject *code, PyObject* consts, PyObject *names,
+                 /* Skip over LOAD_CONST trueconst
+                    POP_JUMP_IF_FALSE xx.  This improves
+                    "while 1" performance.  */
++            
++            case LOAD_FAST:
++                j = get_arg(codestr, i);
++                if (j == 0 && nextop == LOAD_CONST) {
++                    codestr[nexti] = PACKOPARG(LOAD_OTUS, _Py_OPARG(codestr[nexti]));
++                    fill_nops(codestr, op_start, nexti);
++                }
++                break;
+             case LOAD_CONST:
+                 cumlc = lastlc + 1;
+                 if (nextop != POP_JUMP_IF_FALSE  ||
+@@ -319,7 +327,6 @@ PyCode_Optimize(PyObject *code, PyObject* consts, PyObject *names,
+                     cumlc = 0;
+                 }
+                 break;
+-
+                 /* Try to fold tuples of constants.
+                    Skip over BUILD_SEQN 1 UNPACK_SEQN 1.
+                    Replace BUILD_SEQN 2 UNPACK_SEQN 2 with ROT2.
+@@ -428,7 +435,6 @@ PyCode_Optimize(PyObject *code, PyObject* consts, PyObject *names,
+                                 (unsigned int)arg, i + 1);
+                 }
+                 break;
+-
+                 /* Remove unreachable ops after RETURN */
+             case RETURN_VALUE:
+                 h = i + 1;
+-- 
+1.8.3.1
+
