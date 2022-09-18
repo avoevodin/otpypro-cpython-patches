@@ -1,7 +1,7 @@
-From e3191121a16249c98823e95f3edd76cc13f8f7cb Mon Sep 17 00:00:00 2001
+From c3d437444c77c3507509a344b32bc3179730a311 Mon Sep 17 00:00:00 2001
 From: avoevodin8888 <avoevodin8888@gmail.com>
-Date: Sat, 17 Sep 2022 22:11:56 +0000
-Subject: [PATCH] added new opcode load otus instead 0 load fast and load const
+Date: Sun, 18 Sep 2022 06:12:21 +0000
+Subject: [PATCH] added now opcode
 
 ---
  Include/opcode.h        |  1 +
@@ -12,30 +12,30 @@ Subject: [PATCH] added new opcode load otus instead 0 load fast and load const
  5 files changed, 26 insertions(+), 4 deletions(-)
 
 diff --git a/Include/opcode.h b/Include/opcode.h
-index 19944fa..65b46f6 100644
+index 19944fa..0972cc9 100644
 --- a/Include/opcode.h
 +++ b/Include/opcode.h
 @@ -127,6 +127,7 @@ extern "C" {
  #define SET_UPDATE              163
  #define DICT_MERGE              164
  #define DICT_UPDATE             165
-+#define LOAD_OTUS               166
++#define LOAD_AVOEVODIN          166
  
  /* EXCEPT_HANDLER is a special, implicit block type which is created when
     entering an except handler. It is not an opcode but we define it here
 diff --git a/Lib/opcode.py b/Lib/opcode.py
-index ac1aa53..ceabdcc 100644
+index ac1aa53..75df439 100644
 --- a/Lib/opcode.py
 +++ b/Lib/opcode.py
 @@ -213,5 +213,6 @@ def_op('LIST_EXTEND', 162)
  def_op('SET_UPDATE', 163)
  def_op('DICT_MERGE', 164)
  def_op('DICT_UPDATE', 165)
-+def_op('LOAD_OTUS', 166)
++def_op('LOAD_AVOEVODIN', 166)
  
  del def_op, name_op, jrel_op, jabs_op
 diff --git a/Python/ceval.c b/Python/ceval.c
-index 9a61f8a..05c294c 100644
+index 9a61f8a..354a1ec 100644
 --- a/Python/ceval.c
 +++ b/Python/ceval.c
 @@ -1485,7 +1485,21 @@ main_loop:
@@ -43,7 +43,7 @@ index 9a61f8a..05c294c 100644
              FAST_DISPATCH();
          }
 -
-+        case TARGET(LOAD_OTUS): {
++        case TARGET(LOAD_AVOEVODIN): {
 +            PyObject *value = GETLOCAL(0);
 +            if (value == NULL) {
 +                format_exc_check_arg(tstate, PyExc_UnboundLocalError,
@@ -62,7 +62,7 @@ index 9a61f8a..05c294c 100644
              PREDICTED(LOAD_CONST);
              PyObject *value = GETITEM(consts, oparg);
 diff --git a/Python/opcode_targets.h b/Python/opcode_targets.h
-index 538fdbe..437143f 100644
+index 538fdbe..f29ebcb 100644
 --- a/Python/opcode_targets.h
 +++ b/Python/opcode_targets.h
 @@ -165,7 +165,7 @@ static void *opcode_targets[256] = {
@@ -70,12 +70,12 @@ index 538fdbe..437143f 100644
      &&TARGET_DICT_MERGE,
      &&TARGET_DICT_UPDATE,
 -    &&_unknown_opcode,
-+    &&TARGET_LOAD_OTUS,
++    &&TARGET_LOAD_AVOEVODIN,
      &&_unknown_opcode,
      &&_unknown_opcode,
      &&_unknown_opcode,
 diff --git a/Python/peephole.c b/Python/peephole.c
-index 6954c87..7ef7499 100644
+index 6954c87..3712ac5 100644
 --- a/Python/peephole.c
 +++ b/Python/peephole.c
 @@ -303,6 +303,14 @@ PyCode_Optimize(PyObject *code, PyObject* consts, PyObject *names,
@@ -86,7 +86,7 @@ index 6954c87..7ef7499 100644
 +            case LOAD_FAST:
 +                j = get_arg(codestr, i);
 +                if (j == 0 && nextop == LOAD_CONST) {
-+                    codestr[nexti] = PACKOPARG(LOAD_OTUS, _Py_OPARG(codestr[nexti]));
++                    codestr[nexti] = PACKOPARG(LOAD_AVOEVODIN, _Py_OPARG(codestr[nexti]));
 +                    fill_nops(codestr, op_start, nexti);
 +                }
 +                break;
