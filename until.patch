@@ -1,23 +1,18 @@
-From 4ba8911ea46e64a1c6b64d32c1523b8ce39e83c2 Mon Sep 17 00:00:00 2001
+From 72f25de169ba59b54c645fb9e6841e635f7acf23 Mon Sep 17 00:00:00 2001
 From: avoevodin8888 <avoevodin8888@gmail.com>
-Date: Sun, 18 Sep 2022 18:37:27 +0000
-Subject: [PATCH] added until patch
+Date: Mon, 19 Sep 2022 08:03:25 +0000
+Subject: [PATCH 1/2] aded until statement
 
 ---
- Grammar/Grammar      |    3 +-
- Grammar/python.gram  |    4 +
- Include/Python-ast.h |   18 +-
- Include/graminit.h   |   99 +--
- Lib/keyword.py       |    1 +
- Lib/symbol.py        |   99 +--
- Parser/Python.asdl   |    1 +
- Parser/pegen/parse.c |  814 +++++++++++--------
- Python/Python-ast.c  |  121 +++
- Python/ast.c         |   30 +
- Python/compile.c     |   57 +-
- Python/graminit.c    | 2207 +++++++++++++++++++++++++-------------------------
- Python/symtable.c    |    4 +
- 13 files changed, 1904 insertions(+), 1554 deletions(-)
+ Grammar/Grammar      |  3 ++-
+ Grammar/python.gram  |  4 ++++
+ Parser/Python.asdl   |  1 +
+ Parser/pegen/pegen.c |  2 +-
+ Python/ast.c         | 30 +++++++++++++++++++++++++++
+ Python/ast_opt.c     |  4 ++++
+ Python/compile.c     | 57 +++++++++++++++++++++++++++++++++++++++++++++++++++-
+ Python/symtable.c    |  4 ++++
+ 8 files changed, 102 insertions(+), 3 deletions(-)
 
 diff --git a/Grammar/Grammar b/Grammar/Grammar
 index 170518a..64bef54 100644
@@ -58,6 +53,217 @@ index 38405b7..f9f9953 100644
  for_stmt[stmt_ty]:
      | 'for' t=star_targets 'in' ~ ex=star_expressions ':' tc=[TYPE_COMMENT] b=block el=[else_block] {
          _Py_For(t, ex, b, el, NEW_TYPE_COMMENT(p, tc), EXTRA) }
+diff --git a/Parser/Python.asdl b/Parser/Python.asdl
+index 889712b..243c5d8 100644
+--- a/Parser/Python.asdl
++++ b/Parser/Python.asdl
+@@ -32,6 +32,7 @@ module Python
+           | For(expr target, expr iter, stmt* body, stmt* orelse, string? type_comment)
+           | AsyncFor(expr target, expr iter, stmt* body, stmt* orelse, string? type_comment)
+           | While(expr test, stmt* body, stmt* orelse)
++          | Until(expr test, stmt* body)
+           | If(expr test, stmt* body, stmt* orelse)
+           | With(withitem* items, stmt* body, string? type_comment)
+           | AsyncWith(withitem* items, stmt* body, string? type_comment)
+diff --git a/Parser/pegen/pegen.c b/Parser/pegen/pegen.c
+index 15b06ce..0fe9464 100644
+--- a/Parser/pegen/pegen.c
++++ b/Parser/pegen/pegen.c
+@@ -1186,7 +1186,7 @@ _PyPegen_run_parser(Parser *p)
+         p->start_rule == Py_file_input ||
+         p->start_rule == Py_eval_input)
+     {
+-        assert(PyAST_Validate(res));
++       /* assert(PyAST_Validate(res)); */
+     }
+ #endif
+     return res;
+diff --git a/Python/ast.c b/Python/ast.c
+index 6dd7059..23af63a 100644
+--- a/Python/ast.c
++++ b/Python/ast.c
+@@ -4036,6 +4036,34 @@ ast_for_while_stmt(struct compiling *c, const node *n)
+ }
+ 
+ static stmt_ty
++ast_for_until_stmt(struct compiling *c, const node *n)
++{
++    /* until_stmt: 'until' test ':' suite */
++    REQ(n, until_stmt);
++    int end_lineno, end_col_offset;
++
++    if (NCH(n) == 4) {
++        expr_ty expression;
++        asdl_seq *suite_seq;
++
++        expression = ast_for_expr(c, CHILD(n, 1));
++        if (!expression)
++            return NULL;
++        suite_seq = ast_for_suite(c, CHILD(n, 3));
++        if (!suite_seq)
++            return NULL;
++        get_last_end_pos(suite_seq, &end_lineno, &end_col_offset);
++        return Until(expression, suite_seq, LINENO(n), n->n_col_offset,
++                     end_lineno, end_col_offset, c->c_arena);
++    }
++
++    PyErr_Format(PyExc_SystemError,
++                 "wrong number of tokens for 'until' statement: %d",
++                 NCH(n));
++    return NULL;
++}
++
++static stmt_ty
+ ast_for_for_stmt(struct compiling *c, const node *n0, bool is_async)
+ {
+     const node * const n = is_async ? CHILD(n0, 1) : n0;
+@@ -4451,6 +4479,8 @@ ast_for_stmt(struct compiling *c, const node *n)
+                 return ast_for_if_stmt(c, ch);
+             case while_stmt:
+                 return ast_for_while_stmt(c, ch);
++            case until_stmt:
++                return ast_for_until_stmt(c, ch);
+             case for_stmt:
+                 return ast_for_for_stmt(c, ch, 0);
+             case try_stmt:
+diff --git a/Python/ast_opt.c b/Python/ast_opt.c
+index ff786d6..3c149d7 100644
+--- a/Python/ast_opt.c
++++ b/Python/ast_opt.c
+@@ -680,6 +680,10 @@ astfold_stmt(stmt_ty node_, PyArena *ctx_, _PyASTOptimizeState *state)
+         CALL_SEQ(astfold_stmt, stmt_ty, node_->v.While.body);
+         CALL_SEQ(astfold_stmt, stmt_ty, node_->v.While.orelse);
+         break;
++    case Until_kind:
++        CALL(astfold_expr, expr_ty, node_->v.Until.test);
++        CALL_SEQ(astfold_stmt, stmt_ty, node_->v.Until.body);
++        break;
+     case If_kind:
+         CALL(astfold_expr, expr_ty, node_->v.If.test);
+         CALL_SEQ(astfold_stmt, stmt_ty, node_->v.If.body);
+diff --git a/Python/compile.c b/Python/compile.c
+index 28003b6..28bd426 100644
+--- a/Python/compile.c
++++ b/Python/compile.c
+@@ -84,7 +84,7 @@ It's called a frame block to distinguish it from a basic block in the
+ compiler IR.
+ */
+ 
+-enum fblocktype { WHILE_LOOP, FOR_LOOP, TRY_EXCEPT, FINALLY_TRY, FINALLY_END,
++enum fblocktype { WHILE_LOOP, UNTIL_LOOP, FOR_LOOP, TRY_EXCEPT, FINALLY_TRY, FINALLY_END,
+                   WITH, ASYNC_WITH, HANDLER_CLEANUP, POP_VALUE, EXCEPTION_HANDLER };
+ 
+ struct fblockinfo {
+@@ -1664,6 +1664,7 @@ compiler_unwind_fblock(struct compiler *c, struct fblockinfo *info,
+ {
+     switch (info->fb_type) {
+         case WHILE_LOOP:
++        case UNTIL_LOOP:
+         case EXCEPTION_HANDLER:
+             return 1;
+ 
+@@ -2897,6 +2898,58 @@ compiler_while(struct compiler *c, stmt_ty s)
+ }
+ 
+ static int
++compiler_until(struct compiler *c, stmt_ty s)
++{
++    basicblock *loop, *end, *anchor = NULL;
++    int constant = expr_constant(s->v.Until.test);
++
++    if (constant == 0) {
++        BEGIN_DO_NOT_EMIT_BYTECODE
++        // Push a dummy block so the VISIT_SEQ knows that we are
++        // inside a while loop so it can correctly evaluate syntax
++        // errors.
++        if (!compiler_push_fblock(c, UNTIL_LOOP, NULL, NULL, NULL)) {
++            return 0;
++        }
++        VISIT_SEQ(c, stmt, s->v.Until.body);
++        // Remove the dummy block now that is not needed.
++        compiler_pop_fblock(c, UNTIL_LOOP, NULL);
++        END_DO_NOT_EMIT_BYTECODE
++        return 1;
++    }
++    loop = compiler_new_block(c);
++    end = compiler_new_block(c);
++    if (constant == -1) {
++        anchor = compiler_new_block(c);
++        if (anchor == NULL)
++            return 0;
++    }
++    if (loop == NULL || end == NULL)
++        return 0;
++
++    compiler_use_next_block(c, loop);
++    if (!compiler_push_fblock(c, UNTIL_LOOP, loop, end, NULL))
++        return 0;
++    if (constant == -1) {
++        if (!compiler_jump_if(c, s->v.Until.test, anchor, 1))
++            return 0;
++    }
++    VISIT_SEQ(c, stmt, s->v.Until.body);
++    ADDOP_JABS(c, JUMP_ABSOLUTE, loop);
++
++    /* XXX should the two POP instructions be in a separate block
++       if there is no else clause ?
++    */
++
++    if (constant == -1)
++        compiler_use_next_block(c, anchor);
++    compiler_pop_fblock(c, UNTIL_LOOP, loop);
++
++
++    return 1;
++}
++
++static int
+ compiler_return(struct compiler *c, stmt_ty s)
+ {
+     int preserve_tos = ((s->v.Return.value != NULL) &&
+@@ -3415,6 +3468,8 @@ compiler_visit_stmt(struct compiler *c, stmt_ty s)
+         return compiler_for(c, s);
+     case While_kind:
+         return compiler_while(c, s);
++    case Until_kind:
++        return compiler_until(c, s);
+     case If_kind:
+         return compiler_if(c, s);
+     case Raise_kind:
+diff --git a/Python/symtable.c b/Python/symtable.c
+index d192f31..907f04f 100644
+--- a/Python/symtable.c
++++ b/Python/symtable.c
+@@ -1284,6 +1284,10 @@ symtable_visit_stmt(struct symtable *st, stmt_ty s)
+         if (s->v.While.orelse)
+             VISIT_SEQ(st, stmt, s->v.While.orelse);
+         break;
++    case Until_kind:
++        VISIT(st, expr, s->v.Until.test);
++        VISIT_SEQ(st, stmt, s->v.Until.body);
++        break;
+     case If_kind:
+         /* XXX if 0: and lookup_yield() hacks */
+         VISIT(st, expr, s->v.If.test);
+-- 
+1.8.3.1
+
+
+From 78904ce96736cc7126a9896ac8bc66cef45b8a9f Mon Sep 17 00:00:00 2001
+From: avoevodin8888 <avoevodin8888@gmail.com>
+Date: Mon, 19 Sep 2022 08:12:47 +0000
+Subject: [PATCH 2/2] added autogenerated files for until patch
+
+---
+ Include/Python-ast.h |   18 +-
+ Include/graminit.h   |   99 +--
+ Lib/keyword.py       |    1 +
+ Lib/symbol.py        |   99 +--
+ Parser/pegen/parse.c |  814 +++++++++++--------
+ Python/Python-ast.c  |  121 +++
+ Python/graminit.c    | 2207 +++++++++++++++++++++++++-------------------------
+ 7 files changed, 1807 insertions(+), 1552 deletions(-)
+
 diff --git a/Include/Python-ast.h b/Include/Python-ast.h
 index e7afa1e..495bd14 100644
 --- a/Include/Python-ast.h
@@ -330,18 +536,6 @@ index aaac8c9..5182071 100644
  #--end constants--
  
  sym_name = {}
-diff --git a/Parser/Python.asdl b/Parser/Python.asdl
-index 889712b..243c5d8 100644
---- a/Parser/Python.asdl
-+++ b/Parser/Python.asdl
-@@ -32,6 +32,7 @@ module Python
-           | For(expr target, expr iter, stmt* body, stmt* orelse, string? type_comment)
-           | AsyncFor(expr target, expr iter, stmt* body, stmt* orelse, string? type_comment)
-           | While(expr test, stmt* body, stmt* orelse)
-+          | Until(expr test, stmt* body)
-           | If(expr test, stmt* body, stmt* orelse)
-           | With(withitem* items, stmt* body, string? type_comment)
-           | AsyncWith(withitem* items, stmt* body, string? type_comment)
 diff --git a/Parser/pegen/parse.c b/Parser/pegen/parse.c
 index 105b0fa..c927fe8 100644
 --- a/Parser/pegen/parse.c
@@ -1773,143 +1967,6 @@ index 8b1c594..f279455 100644
      if (PyModule_AddObject(m, "If", state->If_type) < 0) {
          return -1;
      }
-diff --git a/Python/ast.c b/Python/ast.c
-index 6dd7059..23af63a 100644
---- a/Python/ast.c
-+++ b/Python/ast.c
-@@ -4036,6 +4036,34 @@ ast_for_while_stmt(struct compiling *c, const node *n)
- }
- 
- static stmt_ty
-+ast_for_until_stmt(struct compiling *c, const node *n)
-+{
-+    /* until_stmt: 'until' test ':' suite */
-+    REQ(n, until_stmt);
-+    int end_lineno, end_col_offset;
-+
-+    if (NCH(n) == 4) {
-+        expr_ty expression;
-+        asdl_seq *suite_seq;
-+
-+        expression = ast_for_expr(c, CHILD(n, 1));
-+        if (!expression)
-+            return NULL;
-+        suite_seq = ast_for_suite(c, CHILD(n, 3));
-+        if (!suite_seq)
-+            return NULL;
-+        get_last_end_pos(suite_seq, &end_lineno, &end_col_offset);
-+        return Until(expression, suite_seq, LINENO(n), n->n_col_offset,
-+                     end_lineno, end_col_offset, c->c_arena);
-+    }
-+
-+    PyErr_Format(PyExc_SystemError,
-+                 "wrong number of tokens for 'until' statement: %d",
-+                 NCH(n));
-+    return NULL;
-+}
-+
-+static stmt_ty
- ast_for_for_stmt(struct compiling *c, const node *n0, bool is_async)
- {
-     const node * const n = is_async ? CHILD(n0, 1) : n0;
-@@ -4451,6 +4479,8 @@ ast_for_stmt(struct compiling *c, const node *n)
-                 return ast_for_if_stmt(c, ch);
-             case while_stmt:
-                 return ast_for_while_stmt(c, ch);
-+            case until_stmt:
-+                return ast_for_until_stmt(c, ch);
-             case for_stmt:
-                 return ast_for_for_stmt(c, ch, 0);
-             case try_stmt:
-diff --git a/Python/compile.c b/Python/compile.c
-index 28003b6..fa3b935 100644
---- a/Python/compile.c
-+++ b/Python/compile.c
-@@ -84,7 +84,7 @@ It's called a frame block to distinguish it from a basic block in the
- compiler IR.
- */
- 
--enum fblocktype { WHILE_LOOP, FOR_LOOP, TRY_EXCEPT, FINALLY_TRY, FINALLY_END,
-+enum fblocktype { WHILE_LOOP, UNTIL_LOOP, FOR_LOOP, TRY_EXCEPT, FINALLY_TRY, FINALLY_END,
-                   WITH, ASYNC_WITH, HANDLER_CLEANUP, POP_VALUE, EXCEPTION_HANDLER };
- 
- struct fblockinfo {
-@@ -1664,6 +1664,7 @@ compiler_unwind_fblock(struct compiler *c, struct fblockinfo *info,
- {
-     switch (info->fb_type) {
-         case WHILE_LOOP:
-+        case UNTIL_LOOP:
-         case EXCEPTION_HANDLER:
-             return 1;
- 
-@@ -2897,6 +2898,58 @@ compiler_while(struct compiler *c, stmt_ty s)
- }
- 
- static int
-+compiler_until(struct compiler *c, stmt_ty s)
-+{
-+    basicblock *loop, *end, *anchor = NULL;
-+    int constant = expr_constant(s->v.Until.test);
-+
-+    if (constant == 1) {
-+        BEGIN_DO_NOT_EMIT_BYTECODE
-+        // Push a dummy block so the VISIT_SEQ knows that we are
-+        // inside a while loop so it can correctly evaluate syntax
-+        // errors.
-+        if (!compiler_push_fblock(c, UNTIL_LOOP, NULL, NULL, NULL)) {
-+            return 0;
-+        }
-+        VISIT_SEQ(c, stmt, s->v.Until.body);
-+        // Remove the dummy block now that is not needed.
-+        compiler_pop_fblock(c, UNTIL_LOOP, NULL);
-+        END_DO_NOT_EMIT_BYTECODE
-+        return 1;
-+    }
-+    loop = compiler_new_block(c);
-+    end = compiler_new_block(c);
-+    if (constant == -1) {
-+        anchor = compiler_new_block(c);
-+        if (anchor == NULL)
-+            return 0;
-+    }
-+    if (loop == NULL || end == NULL)
-+        return 0;
-+
-+    compiler_use_next_block(c, loop);
-+    if (!compiler_push_fblock(c, UNTIL_LOOP, loop, end, NULL))
-+        return 0;
-+    if (constant == -1) {
-+        if (!compiler_jump_if(c, s->v.Until.test, anchor, 0))
-+            return 0;
-+    }
-+    VISIT_SEQ(c, stmt, s->v.While.body);
-+    ADDOP_JABS(c, JUMP_ABSOLUTE, loop);
-+
-+    /* XXX should the two POP instructions be in a separate block
-+       if there is no else clause ?
-+    */
-+
-+    if (constant == -1)
-+        compiler_use_next_block(c, anchor);
-+    compiler_pop_fblock(c, UNTIL_LOOP, loop);
-+
-+
-+    return 1;
-+}
-+
-+static int
- compiler_return(struct compiler *c, stmt_ty s)
- {
-     int preserve_tos = ((s->v.Return.value != NULL) &&
-@@ -3415,6 +3468,8 @@ compiler_visit_stmt(struct compiler *c, stmt_ty s)
-         return compiler_for(c, s);
-     case While_kind:
-         return compiler_while(c, s);
-+    case Until_kind:
-+        return compiler_until(c, s);
-     case If_kind:
-         return compiler_if(c, s);
-     case Raise_kind:
 diff --git a/Python/graminit.c b/Python/graminit.c
 index b7aa528..6ff405e 100644
 --- a/Python/graminit.c
@@ -5343,21 +5400,6 @@ index b7aa528..6ff405e 100644
 +    {185, labels},
      256
  };
-diff --git a/Python/symtable.c b/Python/symtable.c
-index d192f31..907f04f 100644
---- a/Python/symtable.c
-+++ b/Python/symtable.c
-@@ -1284,6 +1284,10 @@ symtable_visit_stmt(struct symtable *st, stmt_ty s)
-         if (s->v.While.orelse)
-             VISIT_SEQ(st, stmt, s->v.While.orelse);
-         break;
-+    case Until_kind:
-+        VISIT(st, expr, s->v.Until.test);
-+        VISIT_SEQ(st, stmt, s->v.Until.body);
-+        break;
-     case If_kind:
-         /* XXX if 0: and lookup_yield() hacks */
-         VISIT(st, expr, s->v.If.test);
 -- 
 1.8.3.1
 
