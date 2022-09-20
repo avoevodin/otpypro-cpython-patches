@@ -1,0 +1,181 @@
+From 8f5790eacb9c5de9431afd2936bd834cc8f35140 Mon Sep 17 00:00:00 2001
+From: avoevodin8888 <avoevodin8888@gmail.com>
+Date: Tue, 20 Sep 2022 05:31:20 +0000
+Subject: [PATCH] added increment first attempt
+
+---
+ Grammar/Grammar     |  5 ++++-
+ Grammar/Tokens      |  2 ++
+ Grammar/python.gram |  5 +++++
+ Parser/Python.asdl  |  2 ++
+ Python/ast.c        | 50 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ Python/compile.c    |  3 +++
+ Python/symtable.c   |  6 ++++++
+ 7 files changed, 72 insertions(+), 1 deletion(-)
+
+diff --git a/Grammar/Grammar b/Grammar/Grammar
+index 170518a..35c6c19 100644
+--- a/Grammar/Grammar
++++ b/Grammar/Grammar
+@@ -83,13 +83,16 @@ simple_stmt: small_stmt (';' small_stmt)* [';'] NEWLINE
+ small_stmt: (expr_stmt | del_stmt | pass_stmt | flow_stmt |
+              import_stmt | global_stmt | nonlocal_stmt | assert_stmt)
+ expr_stmt: testlist_star_expr (annassign | augassign (yield_expr|testlist) |
+-                     [('=' (yield_expr|testlist_star_expr))+ [TYPE_COMMENT]] )
++                     [('=' (yield_expr|testlist_star_expr))+ [TYPE_COMMENT]] |
++                     incr_stmt | decr_stmt)
+ annassign: ':' test ['=' (yield_expr|testlist_star_expr)]
+ testlist_star_expr: (test|star_expr) (',' (test|star_expr))* [',']
+ augassign: ('+=' | '-=' | '*=' | '@=' | '/=' | '%=' | '&=' | '|=' | '^=' |
+             '<<=' | '>>=' | '**=' | '//=')
+ # For normal and annotated assignments, additional restrictions enforced by the interpreter
+ del_stmt: 'del' exprlist
++incr_stmt: '++'
++decr_stmt: '--'
+ pass_stmt: 'pass'
+ flow_stmt: break_stmt | continue_stmt | return_stmt | raise_stmt | yield_stmt
+ break_stmt: 'break'
+diff --git a/Grammar/Tokens b/Grammar/Tokens
+index 9de2da5..a6c25d4 100644
+--- a/Grammar/Tokens
++++ b/Grammar/Tokens
+@@ -53,6 +53,8 @@ ATEQUAL                 '@='
+ RARROW                  '->'
+ ELLIPSIS                '...'
+ COLONEQUAL              ':='
++INCREMENT               '++'
++DECREMENT               '--'
+ 
+ OP
+ AWAIT
+diff --git a/Grammar/python.gram b/Grammar/python.gram
+index 38405b7..0d9c0d5 100644
+--- a/Grammar/python.gram
++++ b/Grammar/python.gram
+@@ -71,6 +71,8 @@ small_stmt[stmt_ty] (memo):
+     | 'continue' { _Py_Continue(EXTRA) }
+     | &'global' global_stmt
+     | &'nonlocal' nonlocal_stmt
++  #  | &'++' incr_stmt
++  #  | &'--' decr_stmt
+ compound_stmt[stmt_ty]:
+     | &('def' | '@' | ASYNC) function_def
+     | &'if' if_stmt
+@@ -112,6 +114,9 @@ augassign[AugOperator*]:
+     | '**=' { _PyPegen_augoperator(p, Pow) }
+     | '//=' { _PyPegen_augoperator(p, FloorDiv) }
+ 
++incr_stmt[stmt_ty]: '++' a=single_target { _Py_Increment(a, EXTRA) }
++decr_stmt[stmt_ty]: '--' a=single_target { _Py_Decrement(a, EXTRA) }
++
+ global_stmt[stmt_ty]: 'global' a=','.NAME+ {
+     _Py_Global(CHECK(_PyPegen_map_names_to_ids(p, a)), EXTRA) }
+ nonlocal_stmt[stmt_ty]: 'nonlocal' a=','.NAME+ {
+diff --git a/Parser/Python.asdl b/Parser/Python.asdl
+index 889712b..828592a 100644
+--- a/Parser/Python.asdl
++++ b/Parser/Python.asdl
+@@ -27,6 +27,8 @@ module Python
+           | AugAssign(expr target, operator op, expr value)
+           -- 'simple' indicates that we annotate simple name without parens
+           | AnnAssign(expr target, expr annotation, expr? value, int simple)
++          | Increment(expr target)
++          | Decrement(expr target)
+ 
+           -- use 'orelse' because else is a keyword in target languages
+           | For(expr target, expr iter, stmt* body, stmt* orelse, string? type_comment)
+diff --git a/Python/ast.c b/Python/ast.c
+index 6dd7059..44e2708 100644
+--- a/Python/ast.c
++++ b/Python/ast.c
+@@ -3221,6 +3221,56 @@ ast_for_expr_stmt(struct compiling *c, const node *n)
+         return AugAssign(expr1, newoperator, expr2, LINENO(n), n->n_col_offset,
+                          n->n_end_lineno, n->n_end_col_offset, c->c_arena);
+     }
++    else if ((TYPE(CHILD(n, 1)) == incr_stmt) || (TYPE(CHILD(n, 1)) == decr_stmt)) {
++        expr_ty expr1, expr2;
++        operator_ty newoperator;
++        node *ch = CHILD(n, 0);
++        
++        switch (TYPE(CHILD(n, 1))) {
++            case incr_stmt:
++                newoperator = Add;
++                break;
++            case decr_stmt:
++                newoperator = Sub;
++                break;
++        }
++
++        expr1 = ast_for_testlist(c, ch);
++        if (!expr1)
++            return NULL;
++        /* Augmented assignments can only have a name, a subscript, or an
++          attribute on the left, though, so we have to explicitly check for
++          those. */
++        switch (expr1->kind) {
++            case Name_kind:
++            case Attribute_kind:
++            case Subscript_kind:
++                break;
++            default:
++                ast_error(c, ch, "'%s' is an illegal expression for increment/decrement",
++                          get_expr_name(expr1));
++                return NULL;
++        }
++
++        /* set_context checks that most expressions are not the left side. */
++        if(!set_context(c, expr1, Store, ch)) {
++            return NULL;
++        }
++        PyObject *pynum;
++        pynum = parsenumber(c, "1");
++        if (!pynum)
++            return NULL;
++
++        if (PyArena_AddPyObject(c->c_arena, pynum) < 0) {
++            Py_DECREF(pynum);
++            return NULL;
++        }
++        // Create that as an expression on the same line and offset as the ++/--
++        expr2 = Constant(pynum, NULL, LINENO(n), n->n_col_offset,
++                        n->n_end_lineno, n->n_end_col_offset, c->c_arena);
++        return AugAssign(expr1, newoperator, expr2, LINENO(n), n->n_col_offset,
++                         n->n_end_lineno, n->n_end_col_offset, c->c_arena);
++    }
+     else if (TYPE(CHILD(n, 1)) == annassign) {
+         expr_ty expr1, expr2, expr3;
+         node *ch = CHILD(n, 0);
+diff --git a/Python/compile.c b/Python/compile.c
+index 28003b6..e1dbd03 100644
+--- a/Python/compile.c
++++ b/Python/compile.c
+@@ -3411,6 +3411,9 @@ compiler_visit_stmt(struct compiler *c, stmt_ty s)
+         return compiler_augassign(c, s);
+     case AnnAssign_kind:
+         return compiler_annassign(c, s);
++    case Increment_kind:
++    case Decrement_kind:
++        break;
+     case For_kind:
+         return compiler_for(c, s);
+     case While_kind:
+diff --git a/Python/symtable.c b/Python/symtable.c
+index d192f31..88d9430 100644
+--- a/Python/symtable.c
++++ b/Python/symtable.c
+@@ -1310,6 +1310,12 @@ symtable_visit_stmt(struct symtable *st, stmt_ty s)
+         if (s->v.Assert.msg)
+             VISIT(st, expr, s->v.Assert.msg);
+         break;
++    case Increment_kind:
++        VISIT(st, expr, s->v.Increment.target);
++        break;
++    case Decrement_kind:
++        VISIT(st, expr, s->v.Decrement.target);
++        break;
+     case Import_kind:
+         VISIT_SEQ(st, alias, s->v.Import.names);
+         break;
+-- 
+1.8.3.1
+
