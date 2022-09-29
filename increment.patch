@@ -1,17 +1,17 @@
-From 8f5790eacb9c5de9431afd2936bd834cc8f35140 Mon Sep 17 00:00:00 2001
+From 95112e086102b5445f0940fbd0c3d73953d167c6 Mon Sep 17 00:00:00 2001
 From: avoevodin8888 <avoevodin8888@gmail.com>
-Date: Tue, 20 Sep 2022 05:31:20 +0000
-Subject: [PATCH] added increment first attempt
+Date: Thu, 29 Sep 2022 17:17:57 +0000
+Subject: [PATCH] incr patch
 
 ---
  Grammar/Grammar     |  5 ++++-
  Grammar/Tokens      |  2 ++
- Grammar/python.gram |  5 +++++
+ Grammar/python.gram |  7 ++++++-
  Parser/Python.asdl  |  2 ++
- Python/ast.c        | 50 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ Python/ast.c        | 51 ++++++++++++++++++++++++++++++++++++++++++++++++++-
  Python/compile.c    |  3 +++
  Python/symtable.c   |  6 ++++++
- 7 files changed, 72 insertions(+), 1 deletion(-)
+ 7 files changed, 73 insertions(+), 3 deletions(-)
 
 diff --git a/Grammar/Grammar b/Grammar/Grammar
 index 170518a..35c6c19 100644
@@ -49,24 +49,30 @@ index 9de2da5..a6c25d4 100644
  OP
  AWAIT
 diff --git a/Grammar/python.gram b/Grammar/python.gram
-index 38405b7..0d9c0d5 100644
+index 38405b7..f34689b 100644
 --- a/Grammar/python.gram
 +++ b/Grammar/python.gram
-@@ -71,6 +71,8 @@ small_stmt[stmt_ty] (memo):
-     | 'continue' { _Py_Continue(EXTRA) }
-     | &'global' global_stmt
-     | &'nonlocal' nonlocal_stmt
-+  #  | &'++' incr_stmt
-+  #  | &'--' decr_stmt
- compound_stmt[stmt_ty]:
-     | &('def' | '@' | ASYNC) function_def
-     | &'if' if_stmt
-@@ -112,6 +114,9 @@ augassign[AugOperator*]:
+@@ -1,4 +1,4 @@
+-# PEG grammar for Python
++#/ PEG grammar for Python
+ 
+ @trailer '''
+ void *
+@@ -59,6 +59,7 @@ simple_stmt[asdl_seq*]:
+ # will throw a SyntaxError.
+ small_stmt[stmt_ty] (memo):
+     | assignment
++    | a=NAME incr_stmt { _Py_Increment(a, EXTRA) }
+     | e=star_expressions { _Py_Expr(e, EXTRA) }
+     | &'return' return_stmt
+     | &('import' | 'from') import_stmt
+@@ -112,6 +113,10 @@ augassign[AugOperator*]:
      | '**=' { _PyPegen_augoperator(p, Pow) }
      | '//=' { _PyPegen_augoperator(p, FloorDiv) }
  
-+incr_stmt[stmt_ty]: '++' a=single_target { _Py_Increment(a, EXTRA) }
-+decr_stmt[stmt_ty]: '--' a=single_target { _Py_Decrement(a, EXTRA) }
++
++incr_stmt[stmt_ty]: 
++    | '++'
 +
  global_stmt[stmt_ty]: 'global' a=','.NAME+ {
      _Py_Global(CHECK(_PyPegen_map_names_to_ids(p, a)), EXTRA) }
@@ -85,10 +91,27 @@ index 889712b..828592a 100644
            -- use 'orelse' because else is a keyword in target languages
            | For(expr target, expr iter, stmt* body, stmt* orelse, string? type_comment)
 diff --git a/Python/ast.c b/Python/ast.c
-index 6dd7059..44e2708 100644
+index 6dd7059..c62f024 100644
 --- a/Python/ast.c
 +++ b/Python/ast.c
-@@ -3221,6 +3221,56 @@ ast_for_expr_stmt(struct compiling *c, const node *n)
+@@ -372,6 +372,8 @@ validate_stmt(stmt_ty stmt)
+     case AugAssign_kind:
+         return validate_expr(stmt->v.AugAssign.target, Store) &&
+             validate_expr(stmt->v.AugAssign.value, Load);
++    case Increment_kind:
++        return validate_expr(stmt->v.Increment.target, Store);
+     case AnnAssign_kind:
+         if (stmt->v.AnnAssign.target->kind != Name_kind &&
+             stmt->v.AnnAssign.simple) {
+@@ -3170,7 +3172,6 @@ ast_for_expr_stmt(struct compiling *c, const node *n)
+        test: ... here starts the operator precedence dance
+      */
+     int num = NCH(n);
+-
+     if (num == 1) {
+         expr_ty e = ast_for_testlist(c, CHILD(n, 0));
+         if (!e)
+@@ -3221,6 +3222,54 @@ ast_for_expr_stmt(struct compiling *c, const node *n)
          return AugAssign(expr1, newoperator, expr2, LINENO(n), n->n_col_offset,
                           n->n_end_lineno, n->n_end_col_offset, c->c_arena);
      }
@@ -96,7 +119,8 @@ index 6dd7059..44e2708 100644
 +        expr_ty expr1, expr2;
 +        operator_ty newoperator;
 +        node *ch = CHILD(n, 0);
-+        
++        newoperator = Add;
++
 +        switch (TYPE(CHILD(n, 1))) {
 +            case incr_stmt:
 +                newoperator = Add;
@@ -105,13 +129,11 @@ index 6dd7059..44e2708 100644
 +                newoperator = Sub;
 +                break;
 +        }
-+
++        
 +        expr1 = ast_for_testlist(c, ch);
 +        if (!expr1)
 +            return NULL;
-+        /* Augmented assignments can only have a name, a subscript, or an
-+          attribute on the left, though, so we have to explicitly check for
-+          those. */
++        
 +        switch (expr1->kind) {
 +            case Name_kind:
 +            case Attribute_kind:
@@ -119,11 +141,10 @@ index 6dd7059..44e2708 100644
 +                break;
 +            default:
 +                ast_error(c, ch, "'%s' is an illegal expression for increment/decrement",
-+                          get_expr_name(expr1));
++                        get_expr_name(expr1));
 +                return NULL;
 +        }
 +
-+        /* set_context checks that most expressions are not the left side. */
 +        if(!set_context(c, expr1, Store, ch)) {
 +            return NULL;
 +        }
@@ -136,11 +157,11 @@ index 6dd7059..44e2708 100644
 +            Py_DECREF(pynum);
 +            return NULL;
 +        }
-+        // Create that as an expression on the same line and offset as the ++/--
 +        expr2 = Constant(pynum, NULL, LINENO(n), n->n_col_offset,
-+                        n->n_end_lineno, n->n_end_col_offset, c->c_arena);
++                       n->n_end_lineno, n->n_end_col_offset, c->c_arena);
 +        return AugAssign(expr1, newoperator, expr2, LINENO(n), n->n_col_offset,
-+                         n->n_end_lineno, n->n_end_col_offset, c->c_arena);
++                        n->n_end_lineno, n->n_end_col_offset, c->c_arena);
++        
 +    }
      else if (TYPE(CHILD(n, 1)) == annassign) {
          expr_ty expr1, expr2, expr3;
